@@ -112,7 +112,7 @@ class Application : public QApplication {
 
     std::shared_ptr<SettingsObject> settings() const { return m_settings; }
 
-    qint64 timeSinceStart() const { return startTime.msecsTo(QDateTime::currentDateTime()); }
+    qint64 timeSinceStart() const { return m_startTime.msecsTo(QDateTime::currentDateTime()); }
 
     QIcon getThemedIcon(const QString& name);
 
@@ -160,7 +160,6 @@ class Application : public QApplication {
     QString getFlameAPIKey();
     QString getModrinthAPIToken();
     QString getUserAgent();
-    QString getUserAgentUncached();
 
     /// this is the root of the 'installation'. Used for automatic updates
     const QString& root() { return m_rootPath; }
@@ -237,7 +236,7 @@ class Application : public QApplication {
     bool shouldExitNow() const;
 
    private:
-    QDateTime startTime;
+    QDateTime m_startTime;
 
     shared_qobject_ptr<QNetworkAccessManager> m_network;
 

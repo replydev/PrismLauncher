@@ -90,6 +90,7 @@
 #include <updater/ExternalUpdater.h>
 #include "InstanceWindow.h"
 
+#include "ui/GuiUtil.h"
 #include "ui/dialogs/AboutDialog.h"
 #include "ui/dialogs/CopyInstanceDialog.h"
 #include "ui/dialogs/CustomMessageBox.h"
@@ -123,6 +124,7 @@
 #include "KonamiCode.h"
 
 #include "InstanceCopyTask.h"
+#include "InstanceDirUpdate.h"
 
 #include "Json.h"
 
@@ -175,10 +177,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
 
         // restore the instance toolbar settings
         auto const setting_name = QString("WideBarVisibility_%1").arg(ui->instanceToolBar->objectName());
-        if (!APPLICATION->settings()->contains(setting_name))
-            instanceToolbarSetting = APPLICATION->settings()->registerSetting(setting_name);
-        else
-            instanceToolbarSetting = APPLICATION->settings()->getSetting(setting_name);
+        instanceToolbarSetting = APPLICATION->settings()->getOrRegisterSetting(setting_name);
 
         ui->instanceToolBar->setVisibilityState(instanceToolbarSetting->get().toByteArray());
 
@@ -208,6 +207,26 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
         exportInstanceMenu->addAction(ui->actionExportInstanceMrPack);
         exportInstanceMenu->addAction(ui->actionExportInstanceFlamePack);
         ui->actionExportInstance->setMenu(exportInstanceMenu);
+
+        QList<QAction*> shortcutActions = { ui->actionCreateInstanceShortcutOther };
+        if (!DesktopServices::isFlatpak()) {
+            QString desktopDir = FS::getDesktopDir();
+            QString applicationDir = FS::getApplicationsDir();
+
+            if(!applicationDir.isEmpty())
+                shortcutActions.push_front(ui->actionCreateInstanceShortcutApplications);
+
+            if(!desktopDir.isEmpty())
+                shortcutActions.push_front(ui->actionCreateInstanceShortcutDesktop);
+        }
+
+        if(shortcutActions.length() > 1) {
+            auto shortcutInstanceMenu = new QMenu(this);
+
+            for(auto action : shortcutActions)
+                shortcutInstanceMenu->addAction(action);
+            ui->actionCreateInstanceShortcut->setMenu(shortcutInstanceMenu);
+        }
     }
 
     // hide, disable and show stuff
@@ -235,6 +254,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
         }
 
         ui->actionViewJavaFolder->setEnabled(BuildConfig.JAVA_DOWNLOADER_ENABLED);
+    }
+
+    {  // logs upload
+
+        auto menu = new QMenu(this);
+        for (auto file : QDir("logs").entryInfoList(QDir::Files)) {
+            auto action = menu->addAction(file.fileName());
+            connect(action, &QAction::triggered, this, [this, file] { GuiUtil::uploadPaste(file.fileName(), file, this); });
+        }
+        ui->actionUploadLog->setMenu(menu);
     }
 
     // add the toolbar toggles to the view menu
@@ -288,10 +317,27 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
 
         view->setSelectionMode(QAbstractItemView::SingleSelection);
         // FIXME: leaks ListViewDelegate
-        view->setItemDelegate(new ListViewDelegate(this));
+        auto delegate = new ListViewDelegate(this);
+        view->setItemDelegate(delegate);
         view->setFrameShape(QFrame::NoFrame);
         // do not show ugly blue border on the mac
         view->setAttribute(Qt::WA_MacShowFocusRect, false);
+        connect(delegate, &ListViewDelegate::textChanged, this, [this](QString before, QString after) {
+            if (auto newRoot = askToUpdateInstanceDirName(m_selectedInstance, before, after, this); !newRoot.isEmpty()) {
+                auto oldID = m_selectedInstance->id();
+                auto newID = QFileInfo(newRoot).fileName();
+                QString origGroup(APPLICATION->instances()->getInstanceGroup(oldID));
+                bool syncGroup = origGroup != GroupId() && oldID != newID;
+                if (syncGroup)
+                    APPLICATION->instances()->setInstanceGroup(oldID, GroupId());
+
+                refreshInstances();
+                setSelectedInstanceById(newID);
+
+                if (syncGroup)
+                    APPLICATION->instances()->setInstanceGroup(newID, origGroup);
+            }
+        });
 
         view->installEventFilter(this);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -706,7 +752,7 @@ void MainWindow::changeActiveAccount()
     QAction* sAction = (QAction*)sender();
 
     // Profile's associated Mojang username
-    if (sAction->data().type() != QVariant::Type::Int)
+    if (sAction->data().typeId() != QMetaType::Int)
         return;
 
     QVariant action_data = sAction->data();
@@ -796,11 +842,7 @@ void MainWindow::updateNewsLabel()
 
 QList<int> stringToIntList(const QString& string)
 {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     QStringList split = string.split(',', Qt::SkipEmptyParts);
-#else
-    QStringList split = string.split(',', QString::SkipEmptyParts);
-#endif
     QList<int> out;
     for (int i = 0; i < split.size(); ++i) {
         out.append(split.at(i).toInt());
@@ -1047,10 +1089,10 @@ void MainWindow::processURLs(QList<QUrl> urls)
 
         switch (type) {
             case PackedResourceType::ResourcePack:
-                minecraftInst->resourcePackList()->installResource(localFileName);
+                minecraftInst->resourcePackList()->installResourceWithFlameMetadata(localFileName, version);
                 break;
             case PackedResourceType::TexturePack:
-                minecraftInst->texturePackList()->installResource(localFileName);
+                minecraftInst->texturePackList()->installResourceWithFlameMetadata(localFileName, version);
                 break;
             case PackedResourceType::DataPack:
                 qWarning() << "Importing of Data Packs not supported at this time. Ignoring" << localFileName;
@@ -1059,7 +1101,7 @@ void MainWindow::processURLs(QList<QUrl> urls)
                 minecraftInst->loaderModList()->installResourceWithFlameMetadata(localFileName, version);
                 break;
             case PackedResourceType::ShaderPack:
-                minecraftInst->shaderPackList()->installResource(localFileName);
+                minecraftInst->shaderPackList()->installResourceWithFlameMetadata(localFileName, version);
                 break;
             case PackedResourceType::WorldSave:
                 minecraftInst->worldList()->installWorld(localFileInfo);
@@ -1300,7 +1342,15 @@ void MainWindow::on_actionReportBug_triggered()
 
 void MainWindow::on_actionClearMetadata_triggered()
 {
-    APPLICATION->metacache()->evictAll();
+    // This if contains side effects!
+    if (!APPLICATION->metacache()->evictAll()) {
+        CustomMessageBox::selectable(this, tr("Error"),
+                                     tr("Metadata cache clear Failed!\nTo clear the metadata cache manually, press Folders -> View "
+                                        "Launcher Root Folder, and after closing the launcher delete the folder named \"meta\"\n"),
+                                     QMessageBox::Warning)
+            ->show();
+    }
+
     APPLICATION->metacache()->SaveNow();
 }
 
@@ -1364,6 +1414,14 @@ void MainWindow::on_actionDeleteInstance_triggered()
         return;
     }
 
+    if (m_selectedInstance->isRunning()) {
+        CustomMessageBox::selectable(this, tr("Cannot Delete Running Instance"),
+                                     tr("The selected instance is currently running and cannot be deleted. Please stop the instance before "
+                                        "attempting to delete it."),
+                                     QMessageBox::Warning, QMessageBox::Ok)
+            ->exec();
+        return;
+    }
     auto id = m_selectedInstance->id();
 
     auto response = CustomMessageBox::selectable(this, tr("Confirm Deletion"),
@@ -1377,20 +1435,8 @@ void MainWindow::on_actionDeleteInstance_triggered()
     if (response != QMessageBox::Yes)
         return;
 
-    auto linkedInstances = APPLICATION->instances()->getLinkedInstancesById(id);
-    if (!linkedInstances.empty()) {
-        response = CustomMessageBox::selectable(this, tr("There are linked instances"),
-                                                tr("The following instance(s) might reference files in this instance:\n\n"
-                                                   "%1\n\n"
-                                                   "Deleting it could break the other instance(s), \n\n"
-                                                   "Do you wish to proceed?",
-                                                   nullptr, linkedInstances.count())
-                                                    .arg(linkedInstances.join("\n")),
-                                                QMessageBox::Warning, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
-                       ->exec();
-        if (response != QMessageBox::Yes)
-            return;
-    }
+    if (!checkLinkedInstances(id, this, tr("Deleting")))
+        return;
 
     if (APPLICATION->instances()->trashInstance(id)) {
         ui->actionUndoTrashInstance->setEnabled(APPLICATION->instances()->trashedSomething());
@@ -1499,18 +1545,11 @@ void MainWindow::on_actionKillInstance_triggered()
     }
 }
 
-void MainWindow::on_actionCreateInstanceShortcut_triggered()
+void MainWindow::createInstanceShortcut(QString shortcutFilePath)
 {
     if (!m_selectedInstance)
         return;
-    auto desktopPath = FS::getDesktopDir();
-    if (desktopPath.isEmpty()) {
-        // TODO come up with an alternative solution (open "save file" dialog)
-        QMessageBox::critical(this, tr("Create instance shortcut"), tr("Couldn't find desktop?!"));
-        return;
-    }
 
-    QString desktopFilePath;
     QString appPath = QApplication::applicationFilePath();
     QString iconPath;
     QStringList args;
@@ -1579,17 +1618,8 @@ void MainWindow::on_actionCreateInstanceShortcut_triggered()
     }
 
     if (DesktopServices::isFlatpak()) {
-        desktopFilePath = FS::PathCombine(desktopPath, FS::RemoveInvalidFilenameChars(m_selectedInstance->name()) + ".desktop");
-        QFileDialog fileDialog;
-        // workaround to make sure the portal file dialog opens in the desktop directory
-        fileDialog.setDirectoryUrl(desktopPath);
-        desktopFilePath = fileDialog.getSaveFileName(this, tr("Create Shortcut"), desktopFilePath, tr("Desktop Entries") + " (*.desktop)");
-        if (desktopFilePath.isEmpty())
-            return;  // file dialog canceled by user
         appPath = "flatpak";
-        QString flatpakAppId = BuildConfig.LAUNCHER_DESKTOPFILENAME;
-        flatpakAppId.remove(".desktop");
-        args.append({ "run", flatpakAppId });
+        args.append({ "run", BuildConfig.LAUNCHER_APPID });
     }
 
 #elif defined(Q_OS_WIN)
@@ -1626,18 +1656,97 @@ void MainWindow::on_actionCreateInstanceShortcut_triggered()
     return;
 #endif
     args.append({ "--launch", m_selectedInstance->id() });
-    if (FS::createShortcut(desktopFilePath, appPath, args, m_selectedInstance->name(), iconPath)) {
-#if not defined(Q_OS_MACOS)
-        QMessageBox::information(this, tr("Create instance shortcut"), tr("Created a shortcut to this instance on your desktop!"));
-#else
-        QMessageBox::information(this, tr("Create instance shortcut"), tr("Created a shortcut to this instance!"));
-#endif
-    } else {
+
+    if (!FS::createShortcut(std::move(shortcutFilePath), appPath, args, m_selectedInstance->name(), iconPath)) {
 #if not defined(Q_OS_MACOS)
         iconFile.remove();
 #endif
         QMessageBox::critical(this, tr("Create instance shortcut"), tr("Failed to create instance shortcut!"));
+        return;
     }
+}
+
+void MainWindow::on_actionCreateInstanceShortcutOther_triggered()
+{
+    if (!m_selectedInstance)
+        return;
+
+    QString defaultedDir = FS::getDesktopDir();
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD) || defined(Q_OS_OPENBSD)
+    QString extension = ".desktop";
+#elif defined(Q_OS_WINDOWS)
+    QString extension = ".lnk";
+#else
+    QString extension = "";
+#endif
+
+    QString shortcutFilePath = FS::PathCombine(defaultedDir, FS::RemoveInvalidFilenameChars(m_selectedInstance->name()) + extension);
+    QFileDialog fileDialog;
+    // workaround to make sure the portal file dialog opens in the desktop directory
+    fileDialog.setDirectoryUrl(defaultedDir);
+
+    shortcutFilePath =
+        fileDialog.getSaveFileName(this, tr("Create Shortcut"), shortcutFilePath, tr("Desktop Entries") + " (*" + extension + ")");
+    if (shortcutFilePath.isEmpty())
+        return;  // file dialog canceled by user
+
+    if(shortcutFilePath.endsWith(extension))
+        shortcutFilePath = shortcutFilePath.mid(0, shortcutFilePath.length() - extension.length());
+    createInstanceShortcut(shortcutFilePath);
+    QMessageBox::information(this, tr("Create instance shortcut"), tr("Created a shortcut to this instance!"));
+}
+
+void MainWindow::on_actionCreateInstanceShortcut_triggered()
+{
+    if (!m_selectedInstance)
+        return;
+
+    if (DesktopServices::isFlatpak())
+        on_actionCreateInstanceShortcutOther_triggered();
+    else
+        on_actionCreateInstanceShortcutDesktop_triggered();
+}
+
+void MainWindow::on_actionCreateInstanceShortcutDesktop_triggered()
+{
+    if (!m_selectedInstance)
+        return;
+
+    QString desktopDir = FS::getDesktopDir();
+    if (desktopDir.isEmpty()) {
+        QMessageBox::critical(this, tr("Create instance shortcut"), tr("Couldn't find desktop?!"));
+        return;
+    }
+
+    QString shortcutFilePath = FS::PathCombine(FS::getDesktopDir(), FS::RemoveInvalidFilenameChars(m_selectedInstance->name()));
+    createInstanceShortcut(shortcutFilePath);
+    QMessageBox::information(this, tr("Create instance shortcut"), tr("Created a shortcut to this instance on your desktop!"));
+}
+
+void MainWindow::on_actionCreateInstanceShortcutApplications_triggered()
+{
+    if (!m_selectedInstance)
+        return;
+
+    QString applicationsDir = FS::getApplicationsDir();
+    if (applicationsDir.isEmpty()) {
+        QMessageBox::critical(this, tr("Create instance shortcut"), tr("Couldn't find applications folder?!"));
+        return;
+    }
+
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+    applicationsDir = FS::PathCombine(applicationsDir, BuildConfig.LAUNCHER_DISPLAYNAME + " Instances");
+
+    QDir applicationsDirQ(applicationsDir);
+    if (!applicationsDirQ.mkpath(".")) {
+        QMessageBox::critical(this, tr("Create instance shortcut"), tr("Failed to create instances folder in applications folder!"));
+        return;
+    }
+#endif
+
+    QString shortcutFilePath = FS::PathCombine(applicationsDir, FS::RemoveInvalidFilenameChars(m_selectedInstance->name()));
+    createInstanceShortcut(shortcutFilePath);
+    QMessageBox::information(this, tr("Create instance shortcut"), tr("Created a shortcut to this instance in your applications folder!"));
 }
 
 void MainWindow::taskEnd()
