@@ -179,9 +179,9 @@ auto Mod::loaders() const -> QString
 auto Mod::side() const -> QString
 {
     if (metadata())
-        return Metadata::modSideToString(metadata()->side);
+        return ModPlatform::SideUtils::toString(metadata()->side);
 
-    return Metadata::modSideToString(Metadata::ModSide::UniversalSide);
+    return ModPlatform::SideUtils::toString(ModPlatform::Side::UniversalSide);
 }
 
 auto Mod::mcVersions() const -> QString
@@ -197,7 +197,7 @@ auto Mod::releaseType() const -> QString
     if (metadata())
         return metadata()->releaseType.toString();
 
-    return ModPlatform::IndexedVersionType().toString();
+    return ModPlatform::IndexedVersionType(ModPlatform::IndexedVersionType::Unknown).toString();
 }
 
 auto Mod::description() const -> QString

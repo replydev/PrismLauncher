@@ -36,6 +36,7 @@
  */
 
 #include "ServersPage.h"
+#include "Application.h"
 #include "ServerPingTask.h"
 #include "ui/dialogs/CustomMessageBox.h"
 #include "ui_ServersPage.h"
@@ -111,11 +112,7 @@ struct Server {
     QByteArray m_icon;
 
     // Data - temporary
-    bool m_checked = false;
-    bool m_up = false;
-    QString m_motd;                       // https://mctools.org/motd-creator
     std::optional<int> m_currentPlayers;  // nullopt if not calculated/calculating
-    int m_maxPlayers = 0;
 };
 
 static std::unique_ptr<nbt::tag_compound> parseServersDat(const QString& filename)
@@ -311,37 +308,33 @@ class ServersModel : public QAbstractListModel {
 
         switch (role) {
             case Qt::DecorationRole: {
-                switch (column) {
-                    case 0: {
-                        auto& bytes = m_servers[row].m_icon;
-                        if (bytes.size()) {
-                            QPixmap px;
-                            if (px.loadFromData(bytes))
-                                return QIcon(px);
-                        }
-                        return APPLICATION->getThemedIcon("unknown_server");
+                if (column == 0) {
+                    auto& bytes = m_servers[row].m_icon;
+                    if (bytes.size()) {
+                        QPixmap px;
+                        if (px.loadFromData(bytes))
+                            return QIcon(px);
                     }
+                    return QIcon::fromTheme("unknown_server");
+                } else {
+                    return QVariant();
+                }
+            }
+            case Qt::DisplayRole:
+                switch (column) {
+                    case 0:
+                        return m_servers[row].m_name;
                     case 1:
                         return m_servers[row].m_address;
-                    default:
-                        return QVariant();
-                }
-                case 2:
-                    if (role == Qt::DisplayRole) {
+                    case 2:
                         if (m_servers[row].m_currentPlayers) {
                             return *m_servers[row].m_currentPlayers;
                         } else {
                             return "...";
                         }
-                    } else {
+                    default:
                         return QVariant();
-                    }
-            }
-            case Qt::DisplayRole:
-                if (column == 0)
-                    return m_servers[row].m_name;
-                else
-                    return QVariant();
+                }
             case ServerPtrRole:
                 if (column == 0)
                     return QVariant::fromValue<void*>((void*)&m_servers[row]);
@@ -578,7 +571,7 @@ ServersPage::ServersPage(InstancePtr inst, QWidget* parent) : QMainWindow(parent
     connect(m_inst.get(), &MinecraftInstance::runningStatusChanged, this, &ServersPage::runningStateChanged);
     connect(ui->nameLine, &QLineEdit::textEdited, this, &ServersPage::nameEdited);
     connect(ui->addressLine, &QLineEdit::textEdited, this, &ServersPage::addressEdited);
-    connect(ui->resourceComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(resourceIndexChanged(int)));
+    connect(ui->resourceComboBox, &QComboBox::currentIndexChanged, this, &ServersPage::resourceIndexChanged);
     connect(m_model, &QAbstractItemModel::rowsRemoved, this, &ServersPage::rowsRemoved);
 
     m_locked = m_inst->isRunning();
@@ -705,7 +698,7 @@ void ServersPage::openedImpl()
     auto const setting_name = QString("WideBarVisibility_%1").arg(id());
     m_wide_bar_setting = APPLICATION->settings()->getOrRegisterSetting(setting_name);
 
-    ui->toolBar->setVisibilityState(m_wide_bar_setting->get().toByteArray());
+    ui->toolBar->setVisibilityState(QByteArray::fromBase64(m_wide_bar_setting->get().toString().toUtf8()));
 
     // ping servers
     m_model->queryServersStatus();
@@ -715,7 +708,7 @@ void ServersPage::closedImpl()
 {
     m_model->unobserve();
 
-    m_wide_bar_setting->set(ui->toolBar->getVisibilityState());
+    m_wide_bar_setting->set(QString::fromUtf8(ui->toolBar->getVisibilityState().toBase64()));
 }
 
 void ServersPage::on_actionAdd_triggered()
