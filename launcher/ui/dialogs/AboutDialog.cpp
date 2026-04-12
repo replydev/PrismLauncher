@@ -42,14 +42,13 @@
 #include "ui_AboutDialog.h"
 
 #include <net/NetJob.h>
-#include <qobject.h>
 
 namespace {
 QString getCreditsHtml()
 {
     QFile dataFile(":/documents/credits.html");
     if (!dataFile.open(QIODevice::ReadOnly)) {
-        qWarning() << "Failed to open file '" << dataFile.fileName() << "' for reading!";
+        qWarning() << "Failed to open file" << dataFile.fileName() << "for reading:" << dataFile.errorString();
         return {};
     }
     QString fileContent = QString::fromUtf8(dataFile.readAll());
@@ -67,7 +66,7 @@ QString getLicenseHtml()
         dataFile.close();
         return output;
     } else {
-        qWarning() << "Failed to open file '" << dataFile.fileName() << "' for reading!";
+        qWarning() << "Failed to open file" << dataFile.fileName() << "for reading:" << dataFile.errorString();
         return QString();
     }
 }

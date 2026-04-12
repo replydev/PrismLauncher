@@ -84,7 +84,7 @@ class ResourceFolderModel : public QAbstractListModel {
     virtual bool startWatching() { return startWatching({ indexDir().absolutePath(), m_dir.absolutePath() }); }
     virtual bool stopWatching() { return stopWatching({ indexDir().absolutePath(), m_dir.absolutePath() }); }
 
-    QDir indexDir() { return { QString("%1/.index").arg(dir().absolutePath()) }; }
+    virtual QDir indexDir() const { return { QString("%1/.index").arg(dir().absolutePath()) }; }
 
     /** Given a path in the system, install that resource, moving it to its place in the
      *  instance file hierarchy.
@@ -153,6 +153,7 @@ class ResourceFolderModel : public QAbstractListModel {
 
     [[nodiscard]] bool validateIndex(const QModelIndex& index) const;
 
+    QBrush rowBackground(int row) const;
     QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
     bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
 
@@ -188,6 +189,7 @@ class ResourceFolderModel : public QAbstractListModel {
     void parseFinished();
 
    protected:
+    [[nodiscard]] virtual Task* createPreUpdateTask() { return nullptr; }
     /** This creates a new update task to be executed by update().
      *
      *  The task should load and parse all resources necessary, and provide a way of accessing such results.
@@ -260,7 +262,10 @@ class ResourceFolderModel : public QAbstractListModel {
     // Represents the relationship between a resource's internal ID and it's row position on the model.
     QMap<QString, int> m_resources_index;
 
-    ConcurrentTask m_helper_thread_task;
+    // Runs off-thread
+    ConcurrentTask m_resourceResolver;
+    bool m_resourceResolverRunning = false;
+
     QMap<int, Task::Ptr> m_active_parse_tasks;
     std::atomic<int> m_next_resolution_ticket = 0;
 };

@@ -36,7 +36,6 @@
  */
 
 #include "Mod.h"
-#include <qpixmap.h>
 
 #include <QDir>
 #include <QRegularExpression>
@@ -104,6 +103,20 @@ int Mod::compare(const Resource& other, SortType type) const
             auto compare_result = QString::compare(releaseType(), cast_other->releaseType(), Qt::CaseInsensitive);
             if (compare_result != 0)
                 return compare_result;
+            break;
+        }
+        case SortType::REQUIRED_BY: {
+            if (requiredByCount() > cast_other->requiredByCount())
+                return 1;
+            if (requiredByCount() < cast_other->requiredByCount())
+                return -1;
+            break;
+        }
+        case SortType::REQUIRES: {
+            if (requiresCount() > cast_other->requiresCount())
+                return 1;
+            if (requiresCount() < cast_other->requiresCount())
+                return -1;
             break;
         }
     }
@@ -283,4 +296,26 @@ QPixmap Mod::icon(QSize size, Qt::AspectRatioMode mode) const
 bool Mod::valid() const
 {
     return !m_local_details.mod_id.isEmpty();
+}
+
+QStringList Mod::dependencies() const
+{
+    return details().dependencies;
+}
+
+int Mod::requiredByCount() const
+{
+    return m_requiredByCount;
+}
+int Mod::requiresCount() const
+{
+    return m_requiresCount;
+}
+void Mod::setRequiredByCount(int value)
+{
+    m_requiredByCount = value;
+}
+void Mod::setRequiresCount(int value)
+{
+    m_requiresCount = value;
 }
